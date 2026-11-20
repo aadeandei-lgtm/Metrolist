@@ -41,6 +41,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -51,6 +52,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.metrolist.desktop.state.app.AppState
 import com.metrolist.desktop.state.app.UiState
 import com.metrolist.desktop.state.content.ArtistState
 import com.metrolist.desktop.state.content.HomeState
@@ -118,6 +120,7 @@ import com.metrolist.shared.ui.components.images.AsyncImage
 import com.metrolist.shared.ui.components.rememberScrollingFabState
 import com.metrolist.shared.ui.icons.MetrolistIcons
 import com.metrolist.shared.ui.menu.cursorContextMenu
+import com.metrolist.shared.ui.menu.groupedMenuItemShapes
 import com.metrolist.shared.ui.menu.rememberCursorContextMenuState
 import com.metrolist.shared.ui.navigation.navigationPopupSource
 import com.metrolist.shared.ui.screens.LibraryAutoPlaylist
@@ -129,6 +132,8 @@ import com.metrolist.shared.ui.screens.libraryContentText
 import com.metrolist.shared.ui.screens.rememberLibrarySearchScrollState
 import com.metrolist.shared.ui.theme.MdSpacing
 import com.metrolist.shared.ui.utils.verticalScrollWithDrag
+import kotlinx.coroutines.launch
+import org.jetbrains.compose.resources.getString
 import org.jetbrains.compose.resources.stringResource
 
 @Composable
@@ -158,7 +163,8 @@ fun LibraryScreen(
                 },
             )
         }
-    var isGridView by remember { mutableStateOf(LibraryState.libraryViewType == LibraryViewType.GRID) }
+    val gridFilter = selectedFilter?.let { LibraryFilterType.valueOf(it.name) } ?: LibraryFilterType.ALL
+    val isGridView = Settings.shared.libraryGridView(gridFilter, LibraryState.libraryViewType == LibraryViewType.GRID)
     var manualOrder by remember { mutableStateOf(Settings.shared.libraryManualOrder) }
     var searchQuery by remember { mutableStateOf("") }
     val activeLibraryGridState = rememberLibrarySearchScrollState(searchQuery, libraryGridState)
@@ -174,8 +180,8 @@ fun LibraryScreen(
     }
     var showNewPlaylistMenu by remember { mutableStateOf(false) }
     var createName by remember { mutableStateOf("") }
-    var playlistToRename by remember { mutableStateOf<PlaylistItem?>(null) }
-    var renameName by remember { mutableStateOf("") }
+    var createDraftRevision by remember { mutableLongStateOf(0L) }
+    val renameDialog = remember { PlaylistRenameDialogState() }
     var playlistToDelete by remember { mutableStateOf<PlaylistItem?>(null) }
     var playlistDeleteFailed by remember { mutableStateOf(false) }
     var showHiddenItems by remember { mutableStateOf(false) }
@@ -214,8 +220,7 @@ fun LibraryScreen(
                         }
                 },
                 onGridViewChange = {
-                    isGridView = it
-                    LibraryState.updateLibraryViewType(if (it) LibraryViewType.GRID else LibraryViewType.LIST)
+                    Settings.shared.setLibraryGridView(gridFilter, it)
                 },
                 onManualOrderChange = {
                     manualOrder = it
@@ -334,8 +339,7 @@ fun LibraryScreen(
                                 onRename =
                                     item.takeIf { it.isEditable }?.let {
                                         {
-                                            renameName = it.title
-                                            playlistToRename = it
+                                            renameDialog.open(it)
                                         }
                                     },
                                 onDelete =
@@ -396,6 +400,7 @@ fun LibraryScreen(
                     DropdownMenuItem(
                         modifier = Modifier.navigationPopupSource(),
                         text = { Text(stringResource(Res.string.create_playlist)) },
+                        shape = groupedMenuItemShapes(0, 2).shape,
                         onClick = {
                             showNewPlaylistMenu = false
                             showCreateDialog = true
@@ -403,6 +408,7 @@ fun LibraryScreen(
                     )
                     DropdownMenuItem(
                         text = { Text(stringResource(Res.string.import_playlist)) },
+                        shape = groupedMenuItemShapes(1, 2).shape,
                         onClick = {
                             showNewPlaylistMenu = false
                             UiState.openPlaylistImportRequested = true
@@ -457,25 +463,39 @@ fun LibraryScreen(
             title = stringResource(Res.string.create_playlist_dialog_title),
             confirmActionLabel = stringResource(Res.string.playlist_create_action),
             value = createName,
-            onValueChange = { createName = it },
+            onValueChange = {
+                createName = it
+                createDraftRevision++
+            },
             onDismiss = { showCreateDialog = false },
         ) {
             val name = createName
+            val revision = ++createDraftRevision
             showCreateDialog = false
             createName = ""
-            LibraryContentState.createPlaylist(name) { result -> result.onSuccess { PlaylistAlbumState.fetchPlaylistData(it) } }
+            LibraryContentState.createPlaylist(name) { result ->
+                result
+                    .onSuccess { PlaylistAlbumState.fetchPlaylistData(it) }
+                    .onFailure {
+                        if (createDraftRevision == revision) createName = name
+                        AppState.scope.launch {
+                            AppState.snackbarHostState.showSnackbar(getString(Res.string.error_occurred))
+                        }
+                    }
+            }
         }
     }
-    PopupContent(playlistToRename) { playlist ->
+    PopupContent(renameDialog.playlist) {
         PlaylistNameDialog(
             title = stringResource(Res.string.rename_playlist_dialog_title),
             confirmActionLabel = stringResource(Res.string.playlist_rename_action),
-            value = renameName,
-            onValueChange = { renameName = it },
-            onDismiss = { playlistToRename = null },
+            value = renameDialog.name,
+            onValueChange = { renameDialog.name = it },
+            onDismiss = renameDialog::dismiss,
+            isSaving = renameDialog.isSaving,
+            error = if (renameDialog.failed) stringResource(Res.string.error_occurred) else null,
         ) {
-            LibraryContentState.renamePlaylist(playlist, renameName) {}
-            playlistToRename = null
+            renameDialog.submit(LibraryContentState::renamePlaylist)
         }
     }
     playlistToDelete?.let { playlist ->
@@ -574,14 +594,26 @@ internal fun PlaylistNameDialog(
     value: String,
     onValueChange: (String) -> Unit,
     onDismiss: () -> Unit,
+    isSaving: Boolean = false,
+    error: String? = null,
     onConfirm: () -> Unit,
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(title) },
-        text = { OutlinedTextField(value, onValueChange, label = { Text(stringResource(Res.string.playlist_name)) }, singleLine = true) },
+        text = {
+            OutlinedTextField(
+                value,
+                onValueChange,
+                enabled = !isSaving,
+                label = { Text(stringResource(Res.string.playlist_name)) },
+                singleLine = true,
+                isError = error != null,
+                supportingText = if (error != null) ({ Text(error) }) else null,
+            )
+        },
         confirmButton = {
-            TextButton(enabled = value.isNotBlank(), onClick = onConfirm, shapes = ButtonDefaults.shapes()) {
+            TextButton(enabled = !isSaving && value.isNotBlank(), onClick = onConfirm, shapes = ButtonDefaults.shapes()) {
                 Text(confirmActionLabel)
             }
         },

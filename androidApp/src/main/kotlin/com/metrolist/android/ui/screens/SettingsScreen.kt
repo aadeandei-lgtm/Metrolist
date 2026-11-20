@@ -105,10 +105,13 @@ import com.metrolist.shared.ui.settings.SettingsPageId
 import com.metrolist.shared.ui.settings.SettingsPlatform
 import com.metrolist.shared.ui.settings.SharedSettingsHost
 import com.metrolist.shared.ui.settings.SharedSettingsScreen
+import com.metrolist.shared.ui.settings.settingsHomeSections
 import com.metrolist.shared.ui.utils.rememberFileSizeFormatter
 import com.metrolist.shared.viewmodels.PlayerViewModel
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.jetbrains.compose.resources.getString
@@ -124,6 +127,7 @@ fun SettingsScreen(
     onNavigateBack: () -> Unit,
     onNavigateToDownloads: () -> Unit,
     onNavigateToArtist: (String) -> Unit = {},
+    initialPage: SettingsPageId? = null,
 ) {
     val pageViewModels = rememberViewModelStoreProvider()
     var currentPage by remember { mutableStateOf<SettingsPageId?>(null) }
@@ -133,6 +137,7 @@ fun SettingsScreen(
     val playerConnection = LocalPlayerConnection.current
     val audioCacheManager: AudioCacheManager = koinInject()
     val homeViewModel: HomeViewModel = koinViewModel()
+    val homeState by homeViewModel.shared.uiState.collectAsState()
     val searchViewModel: SearchViewModel = koinViewModel()
     val searchState by searchViewModel.shared.uiState.collectAsState()
     val historyRemovalFailed = stringResource(Res.string.search_history_removal_failed)
@@ -193,21 +198,27 @@ fun SettingsScreen(
     LaunchedEffect(downloadingFontId) {
         installedFontIds = QuickFontManager.downloadedFontIds(context)
     }
+    var fontImportJob by remember { mutableStateOf<Job?>(null) }
     val fontPicker =
         rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
             if (uri == null) return@rememberLauncherForActivityResult
-            scope.launch {
-                withContext(Dispatchers.IO) { AppFontManager.importFont(context, uri) }
-                    .onSuccess { font ->
-                        SharedPreferences.shared.appFont = FontOption.SYSTEM
-                        SharedPreferences.shared.androidCustomFontFile = font.fileName
-                        SharedPreferences.shared.androidCustomFontName = font.displayName
-                        SharedPreferences.shared.androidActiveFontId = QuickFontManager.CUSTOM_ID
-                        Toast.makeText(context, getString(Res.string.app_font_applied, font.displayName), Toast.LENGTH_SHORT).show()
-                    }.onFailure {
-                        Toast.makeText(context, getString(Res.string.app_font_invalid), Toast.LENGTH_LONG).show()
-                    }
-            }
+            fontImportJob?.cancel()
+            fontImportJob =
+                scope.launch {
+                    AppFontManager
+                        .importFont(context, uri) { font ->
+                            val previousFile = SharedPreferences.shared.androidCustomFontFile
+                            SharedPreferences.shared.androidCustomFontFile = font.fileName
+                            SharedPreferences.shared.androidCustomFontName = font.displayName
+                            SharedPreferences.shared.appFont = FontOption.SYSTEM
+                            SharedPreferences.shared.androidActiveFontId = QuickFontManager.CUSTOM_ID
+                            previousFile
+                        }.onSuccess { font ->
+                            Toast.makeText(context, getString(Res.string.app_font_applied, font.displayName), Toast.LENGTH_SHORT).show()
+                        }.onFailure {
+                            Toast.makeText(context, getString(Res.string.app_font_invalid), Toast.LENGTH_LONG).show()
+                        }
+                }
         }
     val fontPrimaryActions =
         listOf(
@@ -220,11 +231,15 @@ fun SettingsScreen(
                     hasCustomFont || SharedPreferences.shared.androidActiveFontId != QuickFontManager.SYSTEM_ID ||
                         SharedPreferences.shared.appFont != FontOption.SYSTEM,
                 onClick = {
+                    fontImportJob?.cancel()
+                    val previousFile = SharedPreferences.shared.androidCustomFontFile
                     SharedPreferences.shared.appFont = FontOption.SYSTEM
                     SharedPreferences.shared.androidActiveFontId = QuickFontManager.SYSTEM_ID
                     SharedPreferences.shared.androidCustomFontFile = ""
                     SharedPreferences.shared.androidCustomFontName = ""
-                    AppFontManager.removeImportedFont(context)
+                    scope.launch(start = CoroutineStart.UNDISPATCHED) {
+                        AppFontManager.retireImportedFont(context, previousFile)
+                    }
                 },
             ),
             SettingsHostAction(
@@ -232,15 +247,7 @@ fun SettingsScreen(
                 title = stringResource(Res.string.app_font_choose),
                 description = if (hasCustomFont) SharedPreferences.shared.androidCustomFontName else importCustomFontLabel,
                 onClick = {
-                    fontPicker.launch(
-                        arrayOf(
-                            "font/ttf",
-                            "font/otf",
-                            "application/x-font-ttf",
-                            "application/x-font-opentype",
-                            "application/octet-stream",
-                        ),
-                    )
+                    fontPicker.launch(arrayOf("*/*"))
                 },
             ),
         )
@@ -295,11 +302,10 @@ fun SettingsScreen(
         scope.launch {
             isCalculatingCacheSize = true
             try {
-                val exoplayerDir = context.filesDir.resolve("exoplayer")
                 val coilDir = context.cacheDir.resolve("coil")
                 val songCacheSize =
                     withContext(Dispatchers.IO) {
-                        audioCacheManager.getCacheSizeBytes() + exoplayerDir.calculateDirectorySize()
+                        audioCacheManager.getCacheSizeBytes()
                     }
                 val downloadSize = withContext(Dispatchers.IO) { audioCacheManager.getDownloadSizeBytes() }
                 val imageCacheSize =
@@ -337,10 +343,13 @@ fun SettingsScreen(
             add(SettingsPageId.HIDDEN_HOME_ITEMS)
             add(SettingsPageId.HIDDEN_LIBRARY_ITEMS)
             add(SettingsPageId.BLOCKED_ARTISTS)
+            add(SettingsPageId.BLOCKED_SONGS)
             add(SettingsPageId.STORAGE)
             add(SettingsPageId.BACKUP_RESTORE)
-            add(SettingsPageId.UPDATES)
-            add(SettingsPageId.UPDATE_DETAILS)
+            if (BuildConfig.UPDATER_ENABLED) {
+                add(SettingsPageId.UPDATES)
+                add(SettingsPageId.UPDATE_DETAILS)
+            }
             add(SettingsPageId.ABOUT)
             add(SettingsPageId.SUPPORTED_LINKS)
             if (SharedPreferences.shared.devtoolsUnlocked) {
@@ -359,6 +368,8 @@ fun SettingsScreen(
                     context.startActivity(intent)
                     return
                 } catch (_: ActivityNotFoundException) {
+                } catch (_: SecurityException) {
+                    // Some vendor settings apps do not export this screen.
                 }
             }
         }
@@ -366,9 +377,6 @@ fun SettingsScreen(
         if (fallback.resolveActivity(context.packageManager) != null) context.startActivity(fallback)
     }
 
-    var showSpotifyLogin by remember { mutableStateOf(false) }
-    var spotifyCookie by remember { mutableStateOf<String?>(null) }
-    var spotifyError by remember { mutableStateOf<String?>(null) }
     Box(Modifier.fillMaxSize()) {
         SharedSettingsScreen(
             host =
@@ -381,12 +389,14 @@ fun SettingsScreen(
                             viewModel = viewModel,
                             modifier = modifier,
                             isCasting = castState?.isConnected == true,
+                            isBuffering = castState?.isBuffering == true,
                         )
                     },
                     rememberMetroEqProfilePicker = { onPicked -> rememberMetroEqProfilePicker(onPicked) },
                     onClose = onNavigateBack,
                     onOpenArtist = onNavigateToArtist,
-                    onSpotifySignIn = { showSpotifyLogin = true },
+                    homeSections = settingsHomeSections(homeState),
+                    onHomeSectionVisibilityChanged = SharedPreferences.shared::toggleHomeSectionVisibility,
                     bottomContentPadding = miniPlayerInset,
                     storageSummary =
                         if (isCalculatingCacheSize) {
@@ -410,6 +420,7 @@ fun SettingsScreen(
                             stringResource(Res.string.updates_no_updates)
                         },
                     availablePages = availablePages,
+                    initialPage = initialPage,
                     externalPages = setOf(SettingsPageId.SUPPORTED_LINKS),
                     onPageChanged = { page ->
                         if (page != currentPage) {
@@ -556,6 +567,14 @@ fun SettingsScreen(
                                 }
                             }
 
+                            SettingsChangeEffect.AUTO_DOWNLOAD_SAVED_COLLECTIONS -> {
+                                if (value == true) {
+                                    requireDownloadNotifications { SharedPreferences.shared.autoDownloadSavedCollections = true }
+                                } else {
+                                    SharedPreferences.shared.autoDownloadSavedCollections = false
+                                }
+                            }
+
                             SettingsChangeEffect.CONTENT,
                             SettingsChangeEffect.RESTART,
                             SettingsChangeEffect.PLAYBACK_SPEED,
@@ -567,32 +586,6 @@ fun SettingsScreen(
                 ),
             modifier = Modifier.fillMaxSize(),
         )
-        if (showSpotifyLogin) {
-            LaunchedEffect(spotifyCookie) {
-                val cookie = spotifyCookie ?: return@LaunchedEffect
-                try {
-                    androidSpotifyImportManager.authenticate(cookie)
-                    showSpotifyLogin = false
-                } catch (error: CancellationException) {
-                    throw error
-                } catch (_: Exception) {
-                    spotifyError = getString(Res.string.spotify_import_error_sign_in_failed)
-                } finally {
-                    spotifyCookie = null
-                }
-            }
-            SpotifyLoginScreen(
-                isAuthenticating = spotifyCookie != null,
-                authenticationError = spotifyError,
-                onClearAuthenticationError = { spotifyError = null },
-                onSessionCookie = { spotifyCookie = it },
-                onNavigateBack = {
-                    showSpotifyLogin = false
-                    spotifyCookie = null
-                    spotifyError = null
-                },
-            )
-        }
     }
 }
 

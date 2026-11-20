@@ -30,6 +30,7 @@ internal suspend fun legacyArtworkBlur(
         legacyArtworkBlurMutex.withLock {
             val key = LegacyArtworkBlurKey(source, source.generationId, radius)
             legacyArtworkBlurCache.get(key)?.let { return@withLock it }
+            // Bitmap.Config.HARDWARE only exists from API 26; reading it earlier throws NoSuchFieldError.
             val bitmap =
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && source.config == Bitmap.Config.HARDWARE) {
                     source.copy(Bitmap.Config.ARGB_8888, false)
