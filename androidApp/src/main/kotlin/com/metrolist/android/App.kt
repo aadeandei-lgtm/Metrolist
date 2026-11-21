@@ -67,9 +67,9 @@ import com.metrolist.shared.state.coreModule
 import com.metrolist.shared.utils.isCrashReportingAvailable
 import com.metrolist.shared.youtube.di.sharedModule
 import com.metrolist.shared.youtube.playback.AndroidContextProvider
+import com.metrolist.innertubex.extraction.TokenProvider
 import com.metrolist.shared.youtube.playback.AndroidTokenProvider
 import com.metrolist.shared.youtube.playback.StreamResolver
-import com.metrolist.shared.youtube.playback.TokenProvider
 import com.metrolist.shared.youtube.playback.PlaybackNetworkStateStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart

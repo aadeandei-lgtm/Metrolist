@@ -999,7 +999,6 @@ class MusicService :
         // manual play of an already-warmed song) skips the stream-resolution round trip entirely.
         serviceScope.launch {
             player.isPlaying
-                .distinctUntilChanged()
                 .filter { it }
                 .collectLatest {
                     runCatching { prefetchUpcomingQueueEntry() }
