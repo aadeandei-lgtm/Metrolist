@@ -156,6 +156,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
@@ -992,6 +993,18 @@ class MusicService :
                 }
                 if (Settings.shared.enableDiscordIntegration) syncDiscordState()
             }
+        }
+        // Speculatively resolve (and warm the audio cache for) the next queue entry as soon as the current
+        // song starts playing. The resolver caches results, so the transition to the next track (and any
+        // manual play of an already-warmed song) skips the stream-resolution round trip entirely.
+        serviceScope.launch {
+            player.isPlaying
+                .distinctUntilChanged()
+                .filter { it }
+                .collectLatest {
+                    runCatching { prefetchUpcomingQueueEntry() }
+                        .onFailure { Timber.tag(TAG).d("Upcoming queue prefetch skipped: %s", it::class.simpleName) }
+                }
         }
 
         serviceScope.launch {
@@ -2788,6 +2801,33 @@ class MusicService :
                 )
             }
         }
+
+    /**
+     * Resolves and warms the next queue entry while the current song plays, so starting that track
+     * later hits the resolver cache instead of paying a full innertube + PO-token round trip.
+     */
+    private suspend fun prefetchUpcomingQueueEntry() {
+        if (!PlaybackNetworkStateStore.current.connected) return
+        if (AndroidListenTogetherManager.isGuestPlaybackLocked || AndroidDeviceConnect.manager.remote.isActive) return
+        val state = player.queueState.value
+        val next = state.entries.getOrNull(state.currentIndex + 1)?.song ?: return
+        if (next.isUnavailable || Settings.shared.videoViewerVisible) return
+        try {
+            val resource =
+                streamResolver.resolve(
+                    next.id,
+                    next.toAndroidContentHints(wantVideo = false),
+                    playbackAudioQuality(),
+                    sourceSong = next,
+                )
+            runCatching { audioCacheManager.prefetchPlayback(resource) }
+            Timber.tag(TAG).d("Upcoming queue prefetched videoId=%s client=%s", next.id, resource.clientName)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            Timber.tag(TAG).d("Upcoming queue prefetch failed videoId=%s why=%s", next.id, error::class.simpleName)
+        }
+    }
 
     internal fun playFromSearch(request: VoiceSearchRequest) {
         serviceScope.launch {

@@ -67,6 +67,9 @@ import com.metrolist.shared.state.coreModule
 import com.metrolist.shared.utils.isCrashReportingAvailable
 import com.metrolist.shared.youtube.di.sharedModule
 import com.metrolist.shared.youtube.playback.AndroidContextProvider
+import com.metrolist.shared.youtube.playback.AndroidTokenProvider
+import com.metrolist.shared.youtube.playback.StreamResolver
+import com.metrolist.shared.youtube.playback.TokenProvider
 import com.metrolist.shared.youtube.playback.PlaybackNetworkStateStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -258,6 +261,21 @@ class App :
 
         get<CoroutineScope>().launch {
             IconUtils.syncWithPreference(this@App)
+        }
+
+        // Start resolving the playback path (PO/visitor tokens + attestation) as early as possible so
+        // the first tap on Play does not have to wait for token minting. Speculative and failure-safe.
+        get<CoroutineScope>().launch(Dispatchers.IO) {
+            val tokenStart = SystemClock.elapsedRealtime()
+            runCatching { (get<TokenProvider>() as? AndroidTokenProvider)?.prewarm() }
+                .onFailure { Timber.tag(TAG).d("Early PoToken prewarm skipped: %s", it::class.simpleName) }
+            Timber.tag(TAG).d("Early PoToken prewarm finished elapsed=%dms", SystemClock.elapsedRealtime() - tokenStart)
+        }
+        get<CoroutineScope>().launch(Dispatchers.IO) {
+            val resolverStart = SystemClock.elapsedRealtime()
+            runCatching { get<StreamResolver>().prewarm() }
+                .onFailure { Timber.tag(TAG).d("Early stream prewarm skipped: %s", it::class.simpleName) }
+            Timber.tag(TAG).d("Early stream prewarm finished elapsed=%dms", SystemClock.elapsedRealtime() - resolverStart)
         }
 
         get<CoroutineScope>().launch {
