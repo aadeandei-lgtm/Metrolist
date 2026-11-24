@@ -34,6 +34,8 @@ import com.metrolist.android.di.appModule
 import com.metrolist.android.locale.AppLocale
 import com.metrolist.android.onboarding.LegacyInstallMigration
 import com.metrolist.android.onboarding.OnboardingManager
+import com.metrolist.android.onboarding.applyHeadUnitDefaults
+import com.metrolist.android.onboarding.shouldApplyHeadUnitDefaults
 import com.metrolist.android.onboarding.shouldApplyTvContinuePlaybackDefault
 import com.metrolist.android.playback.AudioCacheManager
 import com.metrolist.android.playback.DownloadService
@@ -128,6 +130,7 @@ class App :
 
     companion object {
         private const val TAG = "App"
+        private const val HEAD_UNIT_DEFAULTS_KEY = "head_unit_defaults_v1"
         lateinit var instance: App
             private set
 
@@ -298,6 +301,9 @@ class App :
         legacyInstallMigration = LegacyInstallMigration(this)
         hadLegacyInstallationAtStartup = legacyInstallMigration.hasLegacyInstallation()
         applyTvContinuePlaybackDefault()
+        // Head-unit build: turn off the features a car head unit cannot use (widgets, recognition,
+        // cast discovery, scrobbling, ...) once, on first launch. See HeadUnitDefaults.kt.
+        applyHeadUnitFeatureDefaults()
         if (hadLegacyInstallationAtStartup) Settings.shared.migrateLegacyV13AccountSettings()
         setPlaybackServicesEnabled(onboardingManager.isComplete)
         migrateTelemetryConsent()
@@ -398,6 +404,15 @@ class App :
             Settings.shared.sentryEnabled = false
             preferences.edit { putBoolean("telemetry_consent_v1", true) }
         }
+    }
+
+    private fun applyHeadUnitFeatureDefaults() {
+        if (!BuildConfig.HEAD_UNIT_BUILD) return
+        val preferences = getSharedPreferences("metrolist_onboarding", MODE_PRIVATE)
+        val applied = preferences.getBoolean(HEAD_UNIT_DEFAULTS_KEY, false)
+        if (!shouldApplyHeadUnitDefaults(buildApplies = true, alreadyApplied = applied)) return
+        applyHeadUnitDefaults()
+        preferences.edit { putBoolean(HEAD_UNIT_DEFAULTS_KEY, true) }
     }
 
     private fun applyTvContinuePlaybackDefault() {

@@ -272,6 +272,8 @@ android {
 
         buildConfigField("Long", "DISCORD_APP_ID", "1447278780795064401L")
         buildConfigField("Boolean", "UPDATER_ENABLED", "true")
+        // Overridden to true by the headunit build type (lean defaults on first launch).
+        buildConfigField("Boolean", "HEAD_UNIT_BUILD", "false")
         buildConfigField("String", "BUNDLED_LANGUAGE_TAGS", "\"${bundledLanguageTags.joinToString(",")}\"")
     }
 
@@ -328,6 +330,7 @@ android {
         // but signed with the debug keystore so it installs on a test device directly.
         create("headunit") {
             initWith(getByName("release"))
+            buildConfigField("Boolean", "HEAD_UNIT_BUILD", "true")
             signingConfig = signingConfigs.getByName("debug")
             applicationIdSuffix = ".headunit"
             manifestPlaceholders["appLabel"] = "Metrolist Head Unit"
