@@ -129,16 +129,21 @@ internal fun moveAudioToDirectory(
     }
 }
 
-internal fun downloadFileBaseName(song: SongItem): String {
-    val artist = song.artists.joinToString(", ") { it.name }.trim()
-    return listOf(artist, song.title.trim())
+internal fun downloadFileBaseName(song: SongItem): String =
+    downloadFileBaseName(song.artists.joinToString(", ") { it.name }.trim(), song.title.trim(), song.id)
+
+internal fun downloadFileBaseName(
+    artist: String,
+    title: String,
+    fallbackId: String,
+): String =
+    listOf(artist, title)
         .filter(String::isNotBlank)
         .joinToString(" - ")
         .replace(Regex("""[\\/:*?\"<>|\p{Cc}]"""), "_")
         .trim(' ', '.')
         .boundedDownloadBaseName()
-        .ifBlank { song.id }
-}
+        .ifBlank { fallbackId }
 
 // The normal basename leaves room for the longest audio extension.
 private fun String.boundedDownloadBaseName(maxBytes: Int = 255 - ".audio".length): String {
@@ -267,7 +272,7 @@ class AudioCacheManager(
     suspend fun isDownloaded(songId: String): Boolean =
         withContext(Dispatchers.IO) {
             val entry = database.dao().cachedAudio(songId) ?: return@withContext false
-            entry.kind == KIND_DOWNLOAD && audioAvailable(entry.filePath)
+            entry.kind == KIND_DOWNLOAD && downloadAvailable(entry.filePath)
         }
 
     suspend fun downloadedIds(songIds: Collection<String>): Set<String> =
@@ -277,7 +282,7 @@ class AudioCacheManager(
             candidates
                 .chunked(900)
                 .flatMap { database.dao().cachedAudioCandidates(it, KIND_DOWNLOAD) }
-                .filter { audioAvailable(it.filePath) }
+                .filter { downloadAvailable(it.filePath) }
                 .mapTo(mutableSetOf()) { it.songId }
         }
 
@@ -806,14 +811,7 @@ class AudioCacheManager(
                             )
 
                         val extension = extensionForMimeType(mimeType)
-                        val baseName =
-                            listOf(entry.artist, entry.title)
-                                .filter(String::isNotBlank)
-                                .joinToString(" - ")
-                                .replace(Regex("""[\\/:*?\"<>|\p{Cc}]"""), "_")
-                                .trim(' ', '.')
-                                .take(120)
-                                .ifBlank { safeId }
+                        val baseName = downloadFileBaseName(entry.artist, entry.title, safeId)
                         publishStoredAudio(entry, {
                             when {
                                 targetCustom -> {
@@ -898,7 +896,9 @@ class AudioCacheManager(
         cacheMayPublish: () -> Boolean = { true },
     ) {
         val existing = database.dao().cachedAudio(song.id)
-        if (existing?.kind == kind && audioAvailable(existing.filePath)) {
+        if (existing?.kind == kind &&
+            (if (kind == KIND_DOWNLOAD) downloadAvailable(existing.filePath) else audioAvailable(existing.filePath))
+        ) {
             if (kind == KIND_DOWNLOAD) {
                 val url = existing.thumbnailUrl ?: song.thumbnail
                 if (url != existing.thumbnailUrl) database.dao().upsert(existing.copy(thumbnailUrl = url))
@@ -1574,6 +1574,8 @@ class AudioCacheManager(
                 read == buffer.size
             } == true
         }.getOrDefault(false)
+
+    private fun downloadAvailable(path: String): Boolean = audioAvailable(path) && (isContentUri(path) || File(path).canRead())
 
     // Keep unreadable files indexed so restored permissions or remounted storage can recover them.
     private fun audioMissing(path: String): Boolean {

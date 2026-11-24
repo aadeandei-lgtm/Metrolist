@@ -6,7 +6,7 @@ Release AppImages target x64 and ARM64 on glibc-based distributions. The packagi
 
 Choose x64 for `uname -m` output `x86_64`, or ARM64 for `aarch64`. Get the matching package through [the download channels](README.md#get-the-package).
 
-Use X11 or XWayland. Login needs GTK3/WebKitGTK 4.1. Saved credentials need Secret Service, libsecret, `secret-tool` and `dbus-send`. Audio needs ALSA integration with your audio server. See [Linux setup](../desktop.md#linux-login) and [audio setup](../desktop.md#linux-audio-setup). Startup rejects Omarchy, detected from its packages, install directories, environment, pacman repository or `os-release`, and links to [stopomarchy.org](https://stopomarchy.org/).
+Use X11 or XWayland. Login needs GTK3/WebKitGTK 4.1. Saved credentials need Secret Service, libsecret, `secret-tool` and `dbus-send`. Audio needs ALSA integration with your audio server. See [Linux setup](../desktop.md#linux-login) and [audio setup](../desktop.md#linux-audio-setup). Startup rejects Omarchy when `os-release` identifies it or its `omarchy-version` tool exists in a standard install path or under `OMARCHY_PATH`, and links to [stopomarchy.org](https://stopomarchy.org/). Configuration directories, pacman repository entries and environment paths without the tool do not trigger rejection.
 
 ## Install and verify
 
@@ -33,17 +33,18 @@ On Arch Linux, install the community-maintained [`metrolist-desktop-bin`](https:
 
 ## Homebrew
 
-On x86_64 or ARM64 Linux with [Homebrew](https://brew.sh), the [Metrolist tap](https://github.com/MetrolistGroup/homebrew-tap) unpacks the release AppImage, so FUSE is not needed:
+On x86_64 or ARM64 Linux with [Homebrew](https://brew.sh), the [Metrolist tap](https://github.com/MetrolistGroup/homebrew-tap) installs the release AppImage:
 
 ```sh
 brew trust metrolistgroup/tap
+brew install --cask metrolistgroup/tap/metrolist
 brew install metrolistgroup/tap/metrolist
 metrolist
 ```
 
 Homebrew only installs from trusted taps, so `brew trust` is needed once.
 
-`brew info metrolistgroup/tap/metrolist` shows how to add the desktop entry to your application menu. Update with `brew upgrade metrolist`.
+The cask installs the AppImage and its application menu entry. If `~/.local/share/applications/Metrolist.desktop` already exists, run `brew install --cask --force metrolistgroup/tap/metrolist` so Homebrew can replace it. The formula unpacks the AppImage and adds a `metrolist` command, so FUSE is not needed. `brew info metrolistgroup/tap/metrolist` shows how to add the formula's desktop entry to your application menu. Update the formula with `brew upgrade metrolist`, or the cask with `brew upgrade --cask metrolist`.
 
 ## Nix
 

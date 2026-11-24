@@ -8,6 +8,10 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 
+internal const val M3U_LITERAL_TITLE_COMMENT = "#METROLIST:TITLE-ONLY"
+internal const val M3U_ARTIST_LENGTH_COMMENT_PREFIX = "#METROLIST:ARTIST-LENGTH:"
+internal const val M3U_ARTIST_TITLE_SEPARATOR = " - "
+
 object UniversalPlaylistParser {
     private val json =
         Json {
@@ -15,7 +19,9 @@ object UniversalPlaylistParser {
             isLenient = true
         }
 
-    private val numberingRegex = Regex("""^\s*(?:\[\d+]|\d+[\.\-\):\s]+)\s*""")
+    // A separator between two digits is part of titles like 4:44, not a list marker.
+    private val numberingRegex = Regex("""^\s*(?:\[\d+]|\d+(?![.\-:]\d)[\.\-\):\s]+)\s*""")
+    private val pathFileExtensionRegex = Regex("""\.[A-Za-z0-9]+$""")
     private val bareYoutubeIdRegex = Regex("[A-Za-z0-9_-]{11}")
     private val youtubeHosts = setOf("youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be")
 
@@ -188,12 +194,33 @@ object UniversalPlaylistParser {
         resolveLocalReference: (String) -> String?,
     ): List<PlaylistImportManager.CsvTrack> {
         val results = mutableListOf<PlaylistImportManager.CsvTrack>()
-        var pendingInfo: String? = null
+        var pendingInfo: Pair<String, String>? = null
+        var literalNextLabel = false
+        var nextArtistLength: Int? = null
         for (line in text.lineSequence()) {
+            // Artist length belongs to the immediately following EXTINF, not later tracks.
+            val artistLength = nextArtistLength
+            nextArtistLength = null
             val trimmed = line.trim()
             if (trimmed.isBlank()) continue
             if (trimmed.startsWith("#EXTINF:", ignoreCase = true)) {
-                pendingInfo = trimmed.substringAfter(',').trim().takeIf { ',' in trimmed && it.isNotBlank() }
+                pendingInfo =
+                    trimmed
+                        .substringAfter(',')
+                        .trim()
+                        .takeIf { ',' in trimmed && it.isNotBlank() }
+                        ?.let { label ->
+                            if (literalNextLabel) "" to label else splitM3uDisplayLabel(label, artistLength)
+                        }
+                literalNextLabel = false
+                continue
+            }
+            if (trimmed.startsWith(M3U_ARTIST_LENGTH_COMMENT_PREFIX)) {
+                nextArtistLength = trimmed.removePrefix(M3U_ARTIST_LENGTH_COMMENT_PREFIX).toIntOrNull()
+                continue
+            }
+            if (trimmed == M3U_LITERAL_TITLE_COMMENT) {
+                literalNextLabel = true
                 continue
             }
             if (trimmed.startsWith("#")) continue
@@ -201,12 +228,10 @@ object UniversalPlaylistParser {
             val videoId = extractVideoId(trimmed)
             val directReference = if (videoId == null) resolveDirectReference(trimmed, resolveLocalReference) else null
             val fallbackTitle = referenceTitle(trimmed)
-            val suppliedInfo =
-                pendingInfo?.let { label ->
-                    splitArtistAndTitleOn(label, " - ") ?: splitArtistAndTitle(label)
-                }
+            val suppliedInfo = pendingInfo
             val (artist, title) = suppliedInfo ?: ("" to fallbackTitle)
             pendingInfo = null
+            literalNextLabel = false
             if (title.isNotBlank() || videoId != null || directReference != null) {
                 results +=
                     PlaylistImportManager.CsvTrack(
@@ -240,12 +265,16 @@ object UniversalPlaylistParser {
                 val cleaned = numberingRegex.replace(line, "").trim()
                 if (cleaned.isBlank()) return@mapNotNull null
                 val videoId = extractVideoId(cleaned)
+                val (labelArtist, labelTitle) = splitArtistAndTitle(cleaned)
                 val directReference =
-                    cleaned.takeIf { videoId == null && looksLikeDirectReference(it) }?.let {
-                        resolveDirectReference(it, resolveLocalReference)
-                    }
+                    cleaned
+                        .takeIf { videoId == null && looksLikeDirectReference(it) }
+                        ?.let { resolveDirectReference(it, resolveLocalReference) }
+                        ?.takeUnless { (_, resolved) ->
+                            !resolved && labelArtist.isNotBlank() && labelTitle.isNotBlank() && isAmbiguousSlashLabel(cleaned)
+                        }
                 val (artist, title) =
-                    if (directReference == null) splitArtistAndTitle(cleaned) else "" to referenceTitle(cleaned)
+                    if (directReference == null) labelArtist to labelTitle else "" to referenceTitle(cleaned)
                 if (title.isBlank() && videoId == null && directReference == null) return@mapNotNull null
                 PlaylistImportManager.CsvTrack(
                     title.ifBlank { cleaned },
@@ -258,6 +287,11 @@ object UniversalPlaylistParser {
             }.take(PlaylistImportManager.MAX_PLAYLIST_TRACKS + 1)
             .toList()
             .checkTrackLimit()
+
+    // An artist or title can contain a slash; only favor the label if the reference has no stronger path signal.
+    private fun isAmbiguousSlashLabel(value: String): Boolean =
+        '/' in value && '\\' !in value && !value.startsWith('/') && !value.startsWith('.') &&
+            uriScheme(value) == null && !pathFileExtensionRegex.containsMatchIn(value.substringAfterLast('/'))
 
     private fun List<PlaylistImportManager.CsvTrack>.checkTrackLimit(): List<PlaylistImportManager.CsvTrack> {
         if (size > PlaylistImportManager.MAX_PLAYLIST_TRACKS) throw ImportException(ImportErrorKey.TooManyTracks)
@@ -287,6 +321,19 @@ object UniversalPlaylistParser {
             .substringAfterLast('\\')
             .substringBeforeLast('.')
             .ifBlank { value }
+    }
+
+    internal fun splitM3uDisplayLabel(
+        label: String,
+        artistLength: Int? = null,
+    ): Pair<String, String> {
+        val separator = M3U_ARTIST_TITLE_SEPARATOR
+        if (artistLength != null && artistLength in 1 until label.length - separator.length &&
+            label.startsWith(separator, startIndex = artistLength)
+        ) {
+            return label.substring(0, artistLength).trim() to label.substring(artistLength + separator.length).trim()
+        }
+        return splitArtistAndTitleOn(label, separator) ?: splitArtistAndTitle(label)
     }
 
     internal fun splitArtistAndTitle(line: String): Pair<String, String> {
