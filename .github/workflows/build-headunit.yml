@@ -29,12 +29,12 @@ jobs:
         with:
           packages: 'platform-tools cmdline-tools;latest ndk;30.0.16248370 cmake;4.1.2'
 
-      - name: Build debug APK
-        run: ./gradlew :androidApp:assembleDebug --no-daemon
+      - name: Build head-unit APK (release-optimised, debug-signed)
+        run: ./gradlew :androidApp:assembleHeadunit --no-daemon
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: metrolist-headunit
-          path: androidApp/build/outputs/apk/debug/*.apk
+          path: androidApp/build/outputs/apk/headunit/*.apk
           if-no-files-found: error

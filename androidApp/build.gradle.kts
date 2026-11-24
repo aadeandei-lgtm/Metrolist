@@ -324,6 +324,17 @@ android {
             buildConfigField("Boolean", "UPDATER_ENABLED", "false")
             matchingFallbacks += "release"
         }
+        // Head-unit build: full release optimisations (R8 shrink + optimize + resource shrink)
+        // but signed with the debug keystore so it installs on a test device directly.
+        create("headunit") {
+            initWith(getByName("release"))
+            signingConfig = signingConfigs.getByName("debug")
+            applicationIdSuffix = ".headunit"
+            manifestPlaceholders["appLabel"] = "Metrolist Head Unit"
+            matchingFallbacks += "release"
+            // Full debug symbols for every native lib bloat the APK; they are not needed here.
+            ndk.debugSymbolLevel = null
+        }
         debug {
             applicationIdSuffix = ".debug"
             manifestPlaceholders["appLabel"] = "Metrolist KMP Debug"
