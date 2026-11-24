@@ -367,6 +367,8 @@ android {
         }
         // The debug source set holds the no-op Sentry reporters.
         getByName("izzy").kotlin.directories += "src/debug/kotlin"
+        // Same for the head-unit build: it has no Sentry credentials either.
+        getByName("headunit").kotlin.directories += "src/debug/kotlin"
     }
 
     packaging {
